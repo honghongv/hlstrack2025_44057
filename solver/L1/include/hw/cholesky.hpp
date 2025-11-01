@@ -253,9 +253,9 @@ Function_cholesky_sqrt_op_complex:;
 
 // Reciprocal square root.
 // ============================================================================
-// [版本] cholesky_rsqrt v2.1
-// [说明] 统一走“1/√x”快速路径：
-//  - 泛型：直接调用 x_rsqrt ，流水 II=1；
+//  cholesky_rsqrt v2.1
+//  统一走 1/√x：
+//  - 泛型，直接调用 x_rsqrt ，流水 II=1；
 //  - ap_fixed 特化：先用 float 的 x_rsqrt 得到初值，再在 fixed 域做 1 次牛顿迭代，
 //    y_{n+1} = y_n * (1.5 - 0.5 * x * y_n^2)，去掉昂贵的 sqrt & divide。
 //    中间计算用加宽定点，全部流水化，II=1，避免长组合链。
@@ -278,26 +278,25 @@ void cholesky_rsqrt(ap_fixed<W1, I1, Q1, O1, N1> x,
 #pragma HLS PIPELINE II=1
 
     // ---- 保护 & 扩宽类型 ----
-    // 运行中 x 已在 choleskyAlt 中检查为正；这里作最小保护，避免非常小值数值不稳。
     typedef ap_fixed<( (W1>W2)?W1:W2 ) + 8, ( (I1>I2)?I1:I2 ) + 4, AP_TRN, AP_WRAP, 0> work_t;
     work_t xin = (x <= 0) ? (work_t)1 : (work_t)x;
 
-    // ---- 初值：用 float 的快速 rsqrt 近似（延时短、吞吐高）----
+    // ---- 初值：用 float 的快速 rsqrt 近似 ----
     float xf  = (float)xin;
     float y0f = x_rsqrt(xf);                // 初值
     work_t y  = (work_t)y0f;                // 回到定点域
 
-    // ---- 1 次牛顿迭代（定点域），II=1 流水；不形成长链 ----
+    // ---- 1 次牛顿迭代（定点域）----
     // y = y * (1.5 - 0.5*x*y*y)
     work_t half   = (work_t)0.5;
     work_t onept5 = (work_t)1.5;
 
-    // 适配 DSP，防止资源共享导致 II>1
+    // 适配 DSP
 #pragma HLS BIND_OP variable=y    op=mul impl=DSP
 #pragma HLS BIND_OP variable=half op=mul impl=Auto
 
     work_t y_sq   = y * y;                  // 1
-    work_t term   = onept5 - half * xin * y_sq; // 2（两次乘法会被排布到流水）
+    work_t term   = onept5 - half * xin * y_sq; // 2
     y             = y * term;               // 3
 
     // ---- 截断/舍入到目标格式 ----
@@ -306,11 +305,10 @@ void cholesky_rsqrt(ap_fixed<W1, I1, Q1, O1, N1> x,
 
 
 // ============================================================================
-// [版本] vPSM-2.0  —— 乘法内联加速（II=1，DSP 绑定，复数双乘并行）
-// [说明]
-// - 目的：把原先 4-cycle 的专用模块收编为内联运算，减少函数级延迟与调度开销；确保外层循环仍可 II=1。
-// - 做法：所有分支均使用 `#pragma HLS INLINE` + `#pragma HLS PIPELINE II=1`；
-//         对乘法操作绑定到 DSP（不共享），复数分支同时计算实部/虚部两路乘法。
+// vPSM-2.0  —— 乘法内联加速（II=1，DSP 绑定，复数双乘并行）
+// 
+// - 所有分支均使用 `#pragma HLS INLINE` + `#pragma HLS PIPELINE II=1`；
+//         复数分支同时计算实部/虚部两路乘法。
 // - 数值等价：保持与原实现相同的数值路径（实/复 与实数相乘），最终写回时转换为目标 CType。
 // - 适用：ap_fixed / float / double / hls::x_complex / std::complex 等常见类型组合。
 // ============================================================================
@@ -472,21 +470,16 @@ col_loop:
 
 
 // ===================================================================================================================
-// [版本] vA-2.2-Fmax-fix —— 小矩阵寄存器Bank + 复数3乘法(降低组合深度) + 对角mag²显式分解
-// [要点]
+// vA-2.2-Fmax-fix —— 小矩阵寄存器Bank + 复数3乘法(降低组合深度) + 对角mag²显式分解
 // 1) RowsColsA ≤ 8：用全寄存器 L_bank 完全分区，列内 P_PAR×UF 并行且 II=1；
 // 2) 列级预取并预计算 L(j,k) 的实部/虚部/(c-d)，内环用 3 乘法公式：m1=a*c, m2=b*d, m3=(a+b)*(c-d)；
-//    对角平方和用 |v|² = vr*vr + vi*vi，减轻组合深度，有利于降低 Estimated；
-// 3) RowsColsA > 8：保持你现有的大矩阵（多副本）路径不变；
-// 4) 不修改 cholesky_rsqrt / cholesky_prod_sum_mult 的现有加速实现。
+//    对角平方和用 |v|² = vr*vr + vi*vi，减轻组合深度
+// 3) RowsColsA > 8：保持；
 // ===================================================================================================================
 template <bool LowerTriangularL, int RowsColsA, typename CholeskyTraits, class InputType, class OutputType>
 int choleskyAlt(const InputType A[RowsColsA][RowsColsA], OutputType L[RowsColsA][RowsColsA]) {
 #pragma HLS INLINE off
 
-    // -----------------------------
-    // 通用类型别名
-    // -----------------------------
     typedef typename CholeskyTraits::ACCUM_T       ACC_T;
     typedef typename CholeskyTraits::ADD_T         ADD_T;
     typedef typename CholeskyTraits::DIAG_T        DIAG_T;
@@ -505,7 +498,7 @@ int choleskyAlt(const InputType A[RowsColsA][RowsColsA], OutputType L[RowsColsA]
     ACC_T  anchor[RowsColsA];
 #pragma HLS ARRAY_PARTITION variable=anchor complete
 
-    // 用 decltype 推导标量类型（兼容实数/复数/定点）
+    // fix: decltype 推导标量类型
     typedef decltype(hls::x_real(LOUT_T())) SCALAR_T;
     typedef decltype(hls::x_real(ACC_T()))  ACC_SCALAR_T;
     typedef decltype(hls::x_real(OFF_T()))  OFF_SCALAR_T;
@@ -523,20 +516,20 @@ int choleskyAlt(const InputType A[RowsColsA][RowsColsA], OutputType L[RowsColsA]
     static LOUT_T  diag_out  [RowsColsA];
 #pragma HLS ARRAY_PARTITION variable=diag_recip complete
 
-    // 操作符并行：避免资源共享拖慢 II
+    // 操作符并行
 #pragma HLS ALLOCATION instances=mul limit=-1 operation
 #pragma HLS ALLOCATION instances=add limit=-1 operation
 
     int return_code = 0;
 
-    // 行偏移（大矩阵路径会用到）
+    // 行偏移
     auto row_off = [](int idx)->int {
         int s = idx - 1;
         return ((s * s - s) / 2) + s; // == idx*(idx-1)/2
     };
 
     // -----------------------------
-    // Small-N 寄存器Bank路径（RowsColsA ≤ 8）
+    // 寄存器Bank路径（RowsColsA ≤ 8）
     // -----------------------------
     if (RowsColsA <= 8) {
         LOUT_T L_bank[RowsColsA][RowsColsA];
@@ -644,7 +637,7 @@ int choleskyAlt(const InputType A[RowsColsA][RowsColsA], OutputType L[RowsColsA]
 
                             // 拼回 OFF_T 再与 diag_recip 相乘
                             OFF_T sum_off;
-                            // 这里假定 OFF_T 为复数类型（与当前工程一致）；若为实数则仅置 real
+
                             sum_off.real((OFF_SCALAR_T)acc_r);
                             sum_off.imag((OFF_SCALAR_T)acc_i);
 
@@ -670,7 +663,7 @@ int choleskyAlt(const InputType A[RowsColsA][RowsColsA], OutputType L[RowsColsA]
     }
 
     // -----------------------------
-    // 大矩阵（RowsColsA > 8）回退：保留你现有的大矩阵多副本路径
+    // fix：大矩阵（RowsColsA > 8）回退：保留原有
     // -----------------------------
     {
         const int TRI_SIZE = (RowsColsA * RowsColsA - RowsColsA) / 2;

@@ -103,7 +103,8 @@ LOOP_SHA256_GENENERATE_MAIN:
 
     LOOP_SHA256_GEN_FULL_BLKS:
         for (uint64_t j = 0; j < uint64_t(len >> 6); ++j) {
-#pragma HLS pipeline II = 16
+#pragma HLS pipeline II = 16 rewind
+//更改：添加rewind
 #pragma HLS loop_tripcount min = 0 max = 1
             /// message block.
             SHA256Block b0;
@@ -162,7 +163,8 @@ LOOP_SHA256_GENENERATE_MAIN:
 
         LOOP_SHA256_GEN_COPY_TAIL_AND_ONE:
             for (int i = 0; i < 14; ++i) {
-#pragma HLS pipeline
+#pragma HLS PIPELINE II=1 rewind
+//更改：添加rewind
                 if (i < (left >> 2)) {
                     uint32_t l = msg_strm.read();
                     // pad 1 byte not in this word
@@ -308,6 +310,7 @@ LOOP_SHA256_GENENERATE_MAIN:
     LOOP_SHA256_GEN_FULL_BLKS:
         for (uint64_t j = 0; j < uint64_t(len >> 6); ++j) {
 #pragma HLS pipeline II = 16 rewind
+//更改：添加rewind
 #pragma HLS loop_tripcount min = 0 max = 1
             /// message block.
             SHA256Block b0;
@@ -377,7 +380,7 @@ LOOP_SHA256_GENENERATE_MAIN:
 
         LOOP_SHA256_GEN_COPY_TAIL_PAD_ONE:
             for (int i = 0; i < ((left < 56) ? 7 : 8); ++i) {
-#pragma HLS pipeline
+#pragma HLS pipeline II=1 rewind
                 if (i < (left >> 3)) {
                     // pad 1 not in this 64b word, and need to copy
                     uint64_t ll = msg_strm.read().to_uint64();
@@ -499,39 +502,15 @@ LOOP_SHA256_GENENERATE_MAIN:
 
 } // preProcessing (64bit ver)
 
-inline void dup_strm(hls::stream<uint64_t>& in_strm,
-                     hls::stream<bool>& in_e_strm,
-                     hls::stream<uint64_t>& out1_strm,
-                     hls::stream<bool>& out1_e_strm,
-                     hls::stream<uint64_t>& out2_strm,
-                     hls::stream<bool>& out2_e_strm) {
-    bool e = in_e_strm.read();
+// ========================= 删除原 dup_strm函数======================
 
-    while (!e) {
-#pragma HLS loop_tripcount min = 1 max = 1 avg = 1
-#pragma HLS pipeline II = 1
-        uint64_t in_r = in_strm.read();
-
-        out1_strm.write(in_r);
-        out1_e_strm.write(false);
-        out2_strm.write(in_r);
-        out2_e_strm.write(false);
-
-        e = in_e_strm.read();
-    }
-
-    out1_e_strm.write(true);
-    out2_e_strm.write(true);
-}
-
-// ========================= W 生成（保持 II=1，不改功能） ======================
+// ========================= W 生成======================
 // -----------------------------------------------------------------------------
 // HLS-SHA256 v3.1 (Plan B+E)
 // 功能：消除 dup_strm；在 W 流旁路输出块/消息边界：
 //       - w_blk_last_strm：每块 1 次；true=该块为该消息最后一块
 //       - msg_eos_strm   ：每消息 1 次 false，所有消息结束额外 1 次 true
-// 设计：环形 16 槽 W 缓冲；t<16 取块；t>=16 用 σ0/σ1 + 两级加法树生成 Wt
-// 约束：不跨块保留状态；II=1；pragma 全在函数体内（UG1399）
+// 环形 16 槽 W 缓冲；t<16 取块；t>=16 用 σ0/σ1 + 两级加法树生成 Wt
 // -----------------------------------------------------------------------------
 inline void generateMsgSchedule(hls::stream<SHA256Block>& blk_strm,
                                 hls::stream<uint64_t>&    nblk_strm,
@@ -540,7 +519,7 @@ inline void generateMsgSchedule(hls::stream<SHA256Block>& blk_strm,
                                 hls::stream<bool>&        w_blk_last_strm,
                                 hls::stream<bool>&        msg_eos_strm) {
 #pragma HLS INLINE off
-#pragma HLS BIND_OP op=add impl=dsp latency=1
+
     bool e = end_nblk_strm.read();
 
 GEN_MS_MSG:
@@ -613,19 +592,19 @@ inline void sha256_iter(uint32_t& a,
                         const uint32_t K[],
                         short t) {
 #pragma HLS INLINE
-#pragma HLS BIND_OP op=add impl=dsp latency=1   // 所有本作用域加法优先用 DSP48
+
 
     // ---- 读入当前 Wt ----
     uint32_t Wt = w_strm.read();
 
-    // ---- Σ1(e)：(ROTR^ROTR)^ROTR，显式两级 XOR 树，减少组合深度 ----
+    // ---- Σ1(e)：(ROTR^ROTR)^ROTR，显式两级 XOR 树 ----
     uint32_t e_r6  = (e >> 6)  | (e << (32 - 6));
     uint32_t e_r11 = (e >> 11) | (e << (32 - 11));
     uint32_t e_r25 = (e >> 25) | (e << (32 - 25));
     uint32_t s1a   = e_r6 ^ e_r11;
     uint32_t s1    = s1a  ^ e_r25;
 
-    // ---- CH(e,f,g) 浅逻辑：g ^ (e & (f ^ g))（两级）----
+    // ---- CH(e,f,g) 浅逻辑：g ^ (e & (f ^ g))----
     uint32_t fg_x  = f ^ g;
     uint32_t ch    = g ^ (e & fg_x);
 
@@ -644,10 +623,10 @@ inline void sha256_iter(uint32_t& a,
     uint32_t t1a = h + s1;      // 1 级
     uint32_t t1b = ch + Kt;     // 1 级
     uint32_t t1c = t1a + t1b;   // 2 级
-    uint32_t T1  = t1c + Wt;    // 3 级（最长链，置于 DSP）
+    uint32_t T1  = t1c + Wt;    // 3 级
     uint32_t T2  = s0 + maj;    // <=2 级
 
-    // ---- 状态更新（同功能，不增拍）----
+    // ---- 状态更新（同功能）----
     uint32_t nh = g;
     uint32_t ng = f;
     uint32_t nf = e;
@@ -660,7 +639,6 @@ inline void sha256_iter(uint32_t& a,
     h = nh; g = ng; f = nf; e = ne;
     d = nd; c = nc; b = nb; a = na;
 
-    // 下一拍的常量（保持原逻辑）
     Kt = K[(t + 1) & 63];
 }
 
@@ -670,7 +648,6 @@ inline void sha256_iter(uint32_t& a,
 // 功能：按 W 侧提供的边带流消费数据：
 //       - 外层以 msg_eos_strm 控制消息边界（false=有下一条消息；true=结束）
 //       - 内层以 w_blk_last_strm 控制块边界（true=该块为该消息最后一块）
-// 约束：64 轮主循环 II=1；不跨块状态 MUX；pragma 在函数体内
 // -----------------------------------------------------------------------------
 template <int h_width>
 void sha256Digest_onW(hls::stream<uint32_t>&          w_strm,
@@ -679,7 +656,7 @@ void sha256Digest_onW(hls::stream<uint32_t>&          w_strm,
                       hls::stream<ap_uint<h_width> >& hash_strm,
                       hls::stream<bool>&              end_hash_strm) {
 #pragma HLS INLINE off
-#pragma HLS BIND_OP op=add impl=dsp latency=1  
+
     XF_SECURITY_STATIC_ASSERT((h_width == 256) || (h_width == 224),
                               "Unsupported hash stream width, must be 224 or 256");
 
@@ -727,7 +704,7 @@ MSG_LOOP:
             blk_last = w_blk_last_strm.read(); // 当前块是否为消息最后一块
         } while (!blk_last);
 
-        // —— 输出该消息的 Hash（与原功能等价）
+        // —— 输出该消息的 Hash，keep
         if (h_width == 224) {
             ap_uint<224> w224;
         LOOP_EMIT_H224_ONW:
@@ -759,10 +736,10 @@ MSG_LOOP:
         }
         end_hash_strm.write(false); // 每消息一个 false
     }
-    end_hash_strm.write(true);      // 全部结束一个 true（EOS）
+    end_hash_strm.write(true);      // 全部结束一个 true
 }
 
-// ========================= 多 lane：分发与收集（新增） ========================
+// ========================= add: 多 lane,分发与收集 ========================
 template <int LANES>
 static void sha256_dispatch(hls::stream<SHA256Block>& blk_in,
                             hls::stream<uint64_t>& nblk_in,
@@ -795,14 +772,14 @@ static void sha256_dispatch(hls::stream<SHA256Block>& blk_in,
             blk_out[(int)lane].write(blk_in.read());
         }
 
-        // 输出顺序通道：先 false 后 lane id（收集侧按此配对）
+        // 输出顺序通道，先 false 后 lane id
         order_end.write(false);
         order_lane.write(lane);
 
         e = end_in.read();
     }
 
-    // 终止：每个 lane 一个 true；顺序通道一个 true
+    // 终止，每个 lane 一个 true；顺序通道一个 true
     for (int i = 0; i < LANES; ++i) {
 #pragma HLS UNROLL
         end_out[i].write(true);
@@ -845,31 +822,12 @@ static void sha256_collect(hls::stream<ap_uint<h_width> > hash_in[LANES],
 
 
 
-/// @brief SHA-256/224 implementation top overload for ap_uint input.
-/// @tparam m_width the input message stream width.
-/// @tparam h_width the output hash stream width.
-/// @param msg_strm the message being hashed.
-/// @param len_strm the length message being hashed in byte.
-/// @param end_len_strm end flag stream of input, one per message.
-/// @param hash_strm the result.
-/// @param end_hash_strm end falg stream of output, one per hash.
-// -----------------------------------------------------------------------------
-// HLS-SHA256 v2.2 (sha256_top only)
-// 目的：修正 pragma 对数组元素的绑定方式，消除
-//   ERROR: [HLS 207-5503] The expression must be a constant integer
-// 策略：仍然是 preprocess → dispatch → (2 lanes of {W→Digest}) → collect
-//       - 每条消息固定到一个 lane，避免跨块状态大MUX
-//       - Digest 64轮循环保持 II=1
-//       - sha256_iter 使用平衡加法树，避免长加法链
-// 注意：假设 SHA256_LANES == 2。若你以后改成 3/4，需要按同样模式再手写一份 [2]/[3] 的 pragma。
-// -----------------------------------------------------------------------------
-
 // =============================== 顶层数据流并行 ===============================
 // -----------------------------------------------------------------------------
 // HLS-SHA256 v3.1 (Plan B+E)
 // 功能：去除 dup_strm；W 端输出块/消息边界，Digest 端按边带流消费；
 //       关键 FIFO（w/hash）加深并用 FIFO_SRL，缓解背压小气泡，降低 Latency。
-// 约束：端口/功能不变；pragma 在函数体内；DATAFLOW 保持。
+// keep DATAFLOW 
 // -----------------------------------------------------------------------------
 template <int m_width, int h_width>
 inline void sha256_top(hls::stream<ap_uint<m_width> >& msg_strm,
@@ -893,7 +851,7 @@ inline void sha256_top(hls::stream<ap_uint<m_width> >& msg_strm,
 // v3.6CP: 宽 FIFO 一律映射到 BRAM，避免 RAM64M 的超大地址扇出
 #pragma HLS RESOURCE     variable=blk_strm      core=FIFO_BRAM
 #pragma HLS BIND_STORAGE variable=blk_strm      type=fifo impl=bram
-// 窄控制流保持原样（也可留 LUTRAM，不在临界路径）
+// 窄控制流保持原样
 #pragma HLS RESOURCE     variable=nblk_strm     core=FIFO_LUTRAM
 #pragma HLS RESOURCE     variable=end_nblk_strm core=FIFO_LUTRAM
     }
@@ -963,7 +921,7 @@ inline void sha256_top(hls::stream<ap_uint<m_width> >& msg_strm,
                                   blk_lane, nblk_lane, end_lane,
                                   order_lane, order_end);
 
-    // -------- Stage 2: 每 lane 的 W 生成 + Digest（无 dup_strm） --------
+    // -------- Stage 2: 每 lane 的 W 生成 + Digest --------
     hls::stream<uint32_t>          w_lane[SHA256_LANES];
     hls::stream<bool>              w_blk_last_lane[SHA256_LANES];
     hls::stream<bool>              msg_eos_lane[SHA256_LANES];
@@ -1049,7 +1007,7 @@ DUP_AND_RUN_LANES_ONW:
             ehash_lane[li]);
     }
 
-    // -------- Stage 3: 合并 lane 输出（保持不变） --------
+    // -------- Stage 3: 合并 lane 输出（保持原代码） --------
     sha256_collect<h_width, SHA256_LANES>(
         hash_lane, ehash_lane,
         hash_strm, end_hash_strm,

@@ -48,8 +48,7 @@ namespace compression {
  * @param outStream output stream
  * @param input_size input size
  */
-// [HLS-LZ4 vA.1] 方案A：Epoch 标记失效化（取消整表清空dict_flush），保持 II=1，等价功能
-// 目标：用 tag[] + curEpoch 遮蔽旧周期数据，首写即生效；删除 2k+ 初始化 cycles
+
 template <int MATCH_LEN,
           int MIN_MATCH,
           int LZ_MAX_OFFSET_LIMIT,
@@ -57,9 +56,9 @@ template <int MATCH_LEN,
           int MIN_OFFSET = 1,
           int LZ_DICT_SIZE = 1 << 12,
           int LEFT_BYTES = 64>
-// [HLS-LZ4 vA+C+T+PE.1] 方案A+C+TailFuse + 前缀并行匹配/窄位宽算术以降 Estimate（II/Latency 不变）
-// - 维持：Epoch 失效化（免清空字典）、预热并入主循环、尾部flush融合、II=1、功能与压缩比等价
-// - 新增：并行前缀匹配(优先编码器式)替代 len/done 链；索引/偏移收窄与差值复用；Hash 两级异或树与字节缓存以减扇出
+// [HLS-LZ4 vA+C+T+PE.1] 方案A+C+TailFuse + 前缀并行匹配/窄位宽算术
+// - 维持：Epoch 失效化（免清空字典）、预热并入主循环、尾部flush融合、II=1
+// - 新增：并行前缀匹配替代 len/done 链；索引/偏移收窄与差值复用；Hash 两级异或树与字节缓存
 void lzCompress(hls::stream<ap_uint<8> >& inStream,
                hls::stream<ap_uint<32> >& outStream,
                uint32_t input_size) {
@@ -69,7 +68,7 @@ void lzCompress(hls::stream<ap_uint<8> >& inStream,
 
    if (input_size == 0) return;
 
-   // 字典 + 槽位 epoch 标签（T2P BRAM，读写同拍）
+   // 字典 + 槽位 epoch 标签，T2P BRAM，读写同拍
    static uintDictV_t dict[LZ_DICT_SIZE];
 #pragma HLS BIND_STORAGE variable=dict type=RAM_T2P impl=BRAM
    static ap_uint<8>  tag[LZ_DICT_SIZE];
@@ -167,7 +166,7 @@ lz_compress:
                    eq[m] = (present_window[m] == cmp_bytes[m]);
                }
 
-               // 前缀长度：构造前缀“全1”位 run，然后并行求和（加法树）
+               // 前缀长度：构造前缀“全1”位 run，然后并行求和
                ap_uint<MATCH_LEN> run = eq;
                for (int m = 1; m < MATCH_LEN; ++m) {
 #pragma HLS UNROLL
@@ -179,7 +178,7 @@ lz_compress:
                    len += (ap_uint<8>)run[m];
                }
 
-               // 仅一次计算且收窄位宽的差值（最大 offset < 64K）
+               // 仅一次计算且收窄位宽的差值
                bool idx_gt = (currIdx24 > compareIdx24);
                ap_uint<17> delta = 0;
                if (idx_gt) {
@@ -187,7 +186,7 @@ lz_compress:
                    delta = (ap_uint<17>)delta24;
                }
 
-               // 规则过滤（逻辑等价）
+               // 规则过滤，保持
                bool len_ok  = (len >= (ap_uint<8>)MIN_MATCH);
                bool off_ok  = (delta < (ap_uint<17>)LZ_MAX_OFFSET_LIMIT);
                bool min_off = (delta > 0) && ((delta - 1) >= (ap_uint<17>)MIN_OFFSET);
@@ -216,7 +215,7 @@ lz_compress:
        }
    }
 
-   // 尾部融合：先吐窗口余字节，再吐 LEFT_BYTES
+   // 尾部融合，先吐窗口余字节，再吐 LEFT_BYTES
    const int tail_iters = (MATCH_LEN - 1) + LEFT_BYTES;
 tail_fused:
    for (int t = 0; t < tail_iters; ++t) {
