@@ -7,3 +7,5 @@ Makefile.*
 *.prj
 !reports/
 !prompts/
+!reports/*
+!prompts/*
