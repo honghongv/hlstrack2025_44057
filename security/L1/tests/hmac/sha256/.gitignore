@@ -7,3 +7,5 @@ Makefile.*
 *.prj
 !reports/
 !prompts/
+!reports/csynth.xml
+!reports/test_hmac_sha256_csim.log
