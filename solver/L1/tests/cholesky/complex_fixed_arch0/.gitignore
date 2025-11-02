@@ -7,3 +7,4 @@ Makefile.*
 *.prj
 !reports/
 !prompts/
+!reports/csynth.xml
